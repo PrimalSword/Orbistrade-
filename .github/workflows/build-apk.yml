@@ -27,8 +27,11 @@ jobs:
       - name: Compilar APK
         run: gradle assembleDebug
 
+      - name: Renomear APK da versão
+        run: cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/OrbisWatchLab-v0.13-debug.apk
+
       - name: Publicar APK
         uses: actions/upload-artifact@v4
         with:
-          name: OrbisWatchLab-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: OrbisWatchLab-v0.13
+          path: app/build/outputs/apk/debug/OrbisWatchLab-v0.13-debug.apk
