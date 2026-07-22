@@ -93,7 +93,7 @@ public class MainActivity extends Activity {
     private LabPhase labPhase = LabPhase.IDLE;
 
     private enum OperationType { MTU, READ, NOTIFY, WRITE }
-    private enum LabPhase { IDLE, BASELINE, WAITING_WRITE, OBSERVING }
+    private enum LabPhase { IDLE, BASELINE, OBSERVING }
 
     private static class GattOperation {
         final OperationType type;
@@ -139,35 +139,6 @@ public class MainActivity extends Activity {
         }
     };
 
-    private final Runnable finishBaseline = () -> {
-        if (!labRunning || labPhase != LabPhase.BASELINE) return;
-        appendLog("========== SILÊNCIO ENCERRADO | RX NUS-TX=" + baselineRxCount + " ==========");
-        addEvent("LAB_BASELINE_END", "NUS-TX", "", "rx=" + baselineRxCount);
-        if (activeCommand.isEmpty()) {
-            finishLab("observação sem comando concluída");
-            return;
-        }
-        WriteChannel nus = findNusRx();
-        if (nus == null) { finishLab("NUS-RX indisponível"); return; }
-        labPhase = LabPhase.WAITING_WRITE;
-        commandSentAt = System.currentTimeMillis();
-        appendLog("========== COMANDO ÚNICO TX=" + activeCommand + " ==========");
-        addEvent("LAB_TX", "NUS-RX", activeCommand, "baseline_rx=" + baselineRxCount);
-        enqueue(GattOperation.write(nus.characteristic, parseHex(activeCommand)));
-        runNextOperation();
-        labPhase = LabPhase.OBSERVING;
-        updateLabText(labMode + " | observando 30 s após " + activeCommand);
-        handler.postDelayed(finishObservation, OBSERVE_MS);
-    };
-
-    private final Runnable finishObservation = () -> {
-        if (!labRunning || labPhase != LabPhase.OBSERVING) return;
-        appendLog("========== OBSERVAÇÃO ENCERRADA | TX=" + activeCommand + " | RX NUS-TX=" + postTxRxCount + " ==========");
-        observationMap.put(labMode, "baseline=" + baselineRxCount + ";post_tx=" + postTxRxCount + ";command=" + activeCommand);
-        addEvent("LAB_OBSERVE_END", "NUS-TX", "", "command=" + activeCommand + ";rx=" + postTxRxCount);
-        finishLab("ensaio concluído");
-    };
-
     private final ScanCallback scanCallback = new ScanCallback() {
         @Override public void onScanResult(int callbackType, ScanResult result) {
             BluetoothDevice device = result.getDevice();
@@ -175,10 +146,15 @@ public class MainActivity extends Activity {
             if ((name == null || "(sem nome)".equals(name)) && result.getScanRecord() != null && result.getScanRecord().getDeviceName() != null) name = result.getScanRecord().getDeviceName();
             appendLog("SCAN: " + name + " | " + safeAddress(device) + " | RSSI " + result.getRssi());
             if (name != null && name.toUpperCase(Locale.US).contains("G28")) {
-                lastDevice = device; stopScan(); connect(device, forceMode);
+                lastDevice = device;
+                stopScan();
+                connect(device, forceMode);
             }
         }
-        @Override public void onScanFailed(int errorCode) { appendLog("SCAN FAILED: código=" + errorCode); setStatus("Falha no scanner: " + errorCode); }
+        @Override public void onScanFailed(int errorCode) {
+            appendLog("SCAN FAILED: código=" + errorCode);
+            setStatus("Falha no scanner: " + errorCode);
+        }
     };
 
     private final BluetoothGattCallback gattCallback = new BluetoothGattCallback() {
@@ -186,7 +162,9 @@ public class MainActivity extends Activity {
             handler.removeCallbacks(connectionTimeout);
             appendLog("STATE: status=" + status + " (" + statusName(status) + ") state=" + newState + " (" + stateName(newState) + ")");
             if (status == BluetoothGatt.GATT_SUCCESS && newState == BluetoothProfile.STATE_CONNECTED) {
-                connected = true; gatt = currentGatt; sessionStartedAt = System.currentTimeMillis();
+                connected = true;
+                gatt = currentGatt;
+                sessionStartedAt = System.currentTimeMillis();
                 addEvent("STATE", "", "", "CONNECTED");
                 setStatus("G28 conectado. Descobrindo serviços...");
                 if (hasConnectPermission()) {
@@ -196,7 +174,9 @@ public class MainActivity extends Activity {
                 return;
             }
             if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                connected = false; cancelLab("desconectado"); clearGattQueue();
+                connected = false;
+                cancelLab("desconectado");
+                clearGattQueue();
                 addEvent("STATE", "", "", "DISCONNECTED " + statusName(status));
                 setStatus("Desconectado: " + statusName(status));
                 try { currentGatt.close(); } catch (Exception ignored) { }
@@ -208,7 +188,8 @@ public class MainActivity extends Activity {
         @Override public void onServicesDiscovered(BluetoothGatt currentGatt, int status) {
             appendLog("SERVICES: status=" + statusName(status));
             if (status != BluetoothGatt.GATT_SUCCESS) { setStatus("Falha ao descobrir serviços"); return; }
-            writeChannels.clear(); clearGattQueue();
+            writeChannels.clear();
+            clearGattQueue();
             List<BluetoothGattService> services = currentGatt.getServices();
             appendLog("TOTAL DE SERVIÇOS: " + services.size());
             enqueue(GattOperation.mtu(247));
@@ -222,23 +203,31 @@ public class MainActivity extends Activity {
                     if ((p & BluetoothGattCharacteristic.PROPERTY_READ) != 0) enqueue(GattOperation.read(c));
                 }
             }
-            refreshChannelSpinner(); setStatus("Configurando canais GATT..."); runNextOperation();
+            refreshChannelSpinner();
+            setStatus("Configurando canais GATT...");
+            runNextOperation();
         }
 
         @Override public void onMtuChanged(BluetoothGatt currentGatt, int mtu, int status) {
-            negotiatedMtu = mtu; appendLog("MTU: " + mtu + " status=" + statusName(status));
-            addEvent("MTU", "", String.valueOf(mtu), statusName(status)); completeOperation();
+            negotiatedMtu = mtu;
+            appendLog("MTU: " + mtu + " status=" + statusName(status));
+            addEvent("MTU", "", String.valueOf(mtu), statusName(status));
+            completeOperation();
         }
 
         @Override public void onCharacteristicRead(BluetoothGatt currentGatt, BluetoothGattCharacteristic c, int status) {
-            String channel = shortUuid(c.getUuid()); String payload = bytesToHex(c.getValue());
+            String channel = shortUuid(c.getUuid());
+            String payload = bytesToHex(c.getValue());
             appendLog("RX READ [" + channel + "] status=" + statusName(status) + " | " + payload);
-            recordRx("READ", channel, payload, statusName(status)); completeOperation();
+            recordRx("READ", channel, payload, statusName(status));
+            completeOperation();
         }
 
         @Override public void onCharacteristicChanged(BluetoothGatt currentGatt, BluetoothGattCharacteristic c) {
-            String channel = shortUuid(c.getUuid()); String payload = bytesToHex(c.getValue());
-            appendLog("RX NOTIFY [" + channel + "] " + payload); recordRx("NOTIFY", channel, payload, "");
+            String channel = shortUuid(c.getUuid());
+            String payload = bytesToHex(c.getValue());
+            appendLog("RX NOTIFY [" + channel + "] " + payload);
+            recordRx("NOTIFY", channel, payload, "");
             if (c.getUuid().equals(NUS_TX) && labRunning) {
                 if (labPhase == LabPhase.BASELINE) {
                     baselineRxCount++;
@@ -255,24 +244,40 @@ public class MainActivity extends Activity {
         }
 
         @Override public void onCharacteristicWrite(BluetoothGatt currentGatt, BluetoothGattCharacteristic c, int status) {
-            appendLog("TX CALLBACK [" + shortUuid(c.getUuid()) + "] status=" + statusName(status)); completeOperation();
+            appendLog("TX CALLBACK [" + shortUuid(c.getUuid()) + "] status=" + statusName(status));
+            completeOperation();
         }
 
         @Override public void onDescriptorWrite(BluetoothGatt currentGatt, BluetoothGattDescriptor d, int status) {
-            appendLog("CCCD [" + shortUuid(d.getCharacteristic().getUuid()) + "] status=" + statusName(status)); completeOperation();
+            appendLog("CCCD [" + shortUuid(d.getCharacteristic().getUuid()) + "] status=" + statusName(status));
+            completeOperation();
         }
     };
 
     @Override protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState); sessionStartedAt = System.currentTimeMillis();
-        buildInterface(); initializeBluetooth(); requestRequiredPermissions();
+        super.onCreate(savedInstanceState);
+        sessionStartedAt = System.currentTimeMillis();
+        buildInterface();
+        initializeBluetooth();
+        requestRequiredPermissions();
         appendLog("Orbis Watch Lab v" + VERSION + " iniciado | Android " + Build.VERSION.RELEASE + " API " + Build.VERSION.SDK_INT);
     }
 
     private void buildInterface() {
-        LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(dp(8), dp(8), dp(8), dp(8));
-        TextView title = new TextView(this); title.setText("ORBIS WATCH LAB v" + VERSION); title.setTextSize(20); title.setTypeface(Typeface.DEFAULT_BOLD); root.addView(title);
-        statusView = new TextView(this); statusView.setText("Inicializando Bluetooth..."); statusView.setTextSize(13); root.addView(statusView);
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(8), dp(8), dp(8), dp(8));
+
+        TextView title = new TextView(this);
+        title.setText("ORBIS WATCH LAB v" + VERSION);
+        title.setTextSize(20);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        root.addView(title);
+
+        statusView = new TextView(this);
+        statusView.setText("Inicializando Bluetooth...");
+        statusView.setTextSize(13);
+        root.addView(statusView);
 
         LinearLayout row1 = new LinearLayout(this);
         row1.addView(button("PROCURAR", v -> startScan()), weight());
@@ -286,86 +291,209 @@ public class MainActivity extends Activity {
         row2.addView(button("LIMPAR", v -> clearSession()), weight());
         root.addView(row2);
 
-        rxSummaryView = new TextView(this); rxSummaryView.setText("RX: 0 pacotes | 0 padrões"); rxSummaryView.setTypeface(Typeface.DEFAULT_BOLD); root.addView(rxSummaryView);
-        labView = new TextView(this); labView.setText("Laboratório unitário parado"); root.addView(labView);
+        rxSummaryView = new TextView(this);
+        rxSummaryView.setText("RX: 0 pacotes | 0 padrões");
+        rxSummaryView.setTypeface(Typeface.DEFAULT_BOLD);
+        root.addView(rxSummaryView);
 
-        LinearLayout labRow1 = new LinearLayout(this);
+        labView = new TextView(this);
+        labView.setText("Laboratório unitário parado");
+        root.addView(labView);
+
+        LinearLayout testRow1 = new LinearLayout(this);
         silenceButton = button("SILÊNCIO 30s", v -> startLab("SILÊNCIO 30s", ""));
         df00Button = button("DF00 ÚNICO", v -> startLab("DF00 ÚNICO", "DF 00"));
-        labRow1.addView(silenceButton, weight()); labRow1.addView(df00Button, weight()); root.addView(labRow1);
+        testRow1.addView(silenceButton, weight());
+        testRow1.addView(df00Button, weight());
+        root.addView(testRow1);
 
-        LinearLayout labRow2 = new LinearLayout(this);
+        LinearLayout testRow2 = new LinearLayout(this);
         df0000Button = button("DF0000 ÚNICO", v -> startLab("DF0000 ÚNICO", "DF 00 00"));
         fe01Button = button("FE01 ÚNICO", v -> startLab("FE01 ÚNICO", "FE 01"));
-        labRow2.addView(df0000Button, weight()); labRow2.addView(fe01Button, weight()); root.addView(labRow2);
+        testRow2.addView(df0000Button, weight());
+        testRow2.addView(fe01Button, weight());
+        root.addView(testRow2);
 
-        stopButton = button("PARAR ENSAIO", v -> cancelLab("parada manual")); root.addView(stopButton);
+        stopButton = button("PARAR ENSAIO", v -> cancelLab("parada manual"));
+        root.addView(stopButton);
 
         LinearLayout markerRow = new LinearLayout(this);
-        markerInput = new EditText(this); markerInput.setHint("Marcador"); markerInput.setSingleLine(true);
+        markerInput = new EditText(this);
+        markerInput.setHint("Marcador");
+        markerInput.setSingleLine(true);
         markerRow.addView(markerInput, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 3));
-        markerRow.addView(button("MARCAR", v -> addMarker()), weight()); root.addView(markerRow);
+        markerRow.addView(button("MARCAR", v -> addMarker()), weight());
+        root.addView(markerRow);
 
-        channelSpinner = new Spinner(this); channelAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, new ArrayList<>()); channelSpinner.setAdapter(channelAdapter); root.addView(channelSpinner);
+        channelSpinner = new Spinner(this);
+        channelAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, new ArrayList<>());
+        channelSpinner.setAdapter(channelAdapter);
+        root.addView(channelSpinner);
 
         LinearLayout sendRow = new LinearLayout(this);
-        hexInput = new EditText(this); hexInput.setHint("HEX manual conhecido"); hexInput.setSingleLine(true); hexInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
+        hexInput = new EditText(this);
+        hexInput.setHint("HEX manual conhecido");
+        hexInput.setSingleLine(true);
+        hexInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
         sendButton = button("ENVIAR", v -> sendHex());
-        sendRow.addView(hexInput, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 3)); sendRow.addView(sendButton, weight()); root.addView(sendRow);
+        sendRow.addView(hexInput, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 3));
+        sendRow.addView(sendButton, weight());
+        root.addView(sendRow);
 
-        logScroll = new ScrollView(this); logView = new TextView(this); logView.setText("LOG ORBIS v" + VERSION + "\n"); logView.setTextSize(9); logView.setTypeface(Typeface.MONOSPACE); logView.setTextIsSelectable(true); logScroll.addView(logView);
+        logScroll = new ScrollView(this);
+        logView = new TextView(this);
+        logView.setText("LOG ORBIS v" + VERSION + "\n");
+        logView.setTextSize(9);
+        logView.setTypeface(Typeface.MONOSPACE);
+        logView.setTextIsSelectable(true);
+        logScroll.addView(logView);
         root.addView(logScroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
-        setContentView(root); updateSendState();
+        setContentView(root);
+        updateSendState();
     }
 
-    private Button button(String text, View.OnClickListener listener) { Button b = new Button(this); b.setText(text); b.setTextSize(8); b.setOnClickListener(listener); return b; }
+    private Button button(String text, View.OnClickListener listener) {
+        Button b = new Button(this);
+        b.setText(text);
+        b.setTextSize(8);
+        b.setOnClickListener(listener);
+        return b;
+    }
+
     private LinearLayout.LayoutParams weight() { return new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1); }
+
+    private void startLab(String mode, String command) {
+        if (!connected || operationRunning || !operationQueue.isEmpty()) { toast("Aguarde GATT ficar pronto"); return; }
+        if (!command.isEmpty() && findNusRx() == null) { toast("NUS-RX não disponível"); return; }
+        cancelLab("reinício");
+        labRunning = true;
+        labMode = mode;
+        activeCommand = command;
+        baselineRxCount = 0;
+        postTxRxCount = 0;
+        labStartedAt = System.currentTimeMillis();
+        commandSentAt = 0;
+        labPhase = LabPhase.BASELINE;
+        appendLog("========== LAB v" + VERSION + " INICIADO: " + mode + " ==========");
+        appendLog("Fase 1: silêncio por 30000 ms; depois comando único e observação por 30000 ms");
+        addEvent("LAB_START", "NUS-RX", command, "mode=" + mode);
+        updateLabText(mode + " | silêncio 30 s");
+        updateSendState();
+        handler.postDelayed(this::finishBaseline, BASELINE_MS);
+    }
+
+    private void finishBaseline() {
+        if (!labRunning || labPhase != LabPhase.BASELINE) return;
+        appendLog("========== SILÊNCIO ENCERRADO | RX NUS-TX=" + baselineRxCount + " ==========");
+        addEvent("LAB_BASELINE_END", "NUS-TX", "", "rx=" + baselineRxCount);
+        if (activeCommand.isEmpty()) {
+            finishLab("observação sem comando concluída");
+            return;
+        }
+        WriteChannel nus = findNusRx();
+        if (nus == null) { finishLab("NUS-RX indisponível"); return; }
+        commandSentAt = System.currentTimeMillis();
+        appendLog("========== COMANDO ÚNICO TX=" + activeCommand + " ==========");
+        addEvent("LAB_TX", "NUS-RX", activeCommand, "baseline_rx=" + baselineRxCount);
+        enqueue(GattOperation.write(nus.characteristic, parseHex(activeCommand)));
+        runNextOperation();
+        labPhase = LabPhase.OBSERVING;
+        updateLabText(labMode + " | observando 30 s após " + activeCommand);
+        handler.postDelayed(this::finishObservation, OBSERVE_MS);
+    }
+
+    private void finishObservation() {
+        if (!labRunning || labPhase != LabPhase.OBSERVING) return;
+        appendLog("========== OBSERVAÇÃO ENCERRADA | TX=" + activeCommand + " | RX NUS-TX=" + postTxRxCount + " ==========");
+        observationMap.put(labMode, "baseline=" + baselineRxCount + ";post_tx=" + postTxRxCount + ";command=" + activeCommand);
+        addEvent("LAB_OBSERVE_END", "NUS-TX", "", "command=" + activeCommand + ";rx=" + postTxRxCount);
+        finishLab("ensaio concluído");
+    }
+
+    private void finishLab(String reason) {
+        boolean wasRunning = labRunning;
+        labRunning = false;
+        labPhase = LabPhase.IDLE;
+        handler.removeCallbacksAndMessages(null);
+        if (wasRunning) {
+            appendLog("========== LAB ENCERRADO: " + reason + " | silêncio=" + baselineRxCount + " pós-TX=" + postTxRxCount + " ==========");
+            addEvent("LAB_STOP", "", "", reason + ";baseline=" + baselineRxCount + ";post_tx=" + postTxRxCount);
+        }
+        updateLabText("Laboratório parado: " + reason);
+        updateSendState();
+    }
+
+    private void cancelLab(String reason) {
+        if (!labRunning) return;
+        finishLab(reason);
+    }
 
     private void initializeBluetooth() {
         BluetoothManager manager = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
         if (manager == null) { setStatus("BluetoothManager indisponível"); return; }
-        adapter = manager.getAdapter(); if (adapter == null) { setStatus("Sem Bluetooth"); return; }
+        adapter = manager.getAdapter();
+        if (adapter == null) { setStatus("Sem Bluetooth"); return; }
         if (!adapter.isEnabled()) { setStatus("Ative o Bluetooth"); return; }
-        scanner = adapter.getBluetoothLeScanner(); setStatus("Pronto para procurar o G28");
+        scanner = adapter.getBluetoothLeScanner();
+        setStatus("Pronto para procurar o G28");
     }
 
     private void requestRequiredPermissions() {
         if (Build.VERSION.SDK_INT >= 31) {
             if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED || checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED)
                 requestPermissions(new String[]{Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT}, REQUEST_PERMISSIONS);
-        } else if (Build.VERSION.SDK_INT >= 23 && checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED)
+        } else if (Build.VERSION.SDK_INT >= 23 && checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, REQUEST_PERMISSIONS);
+        }
     }
 
     private boolean hasScanPermission() { return Build.VERSION.SDK_INT < 31 || checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED; }
     private boolean hasConnectPermission() { return Build.VERSION.SDK_INT < 31 || checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED; }
 
     private void startScan() {
-        cancelLab("nova busca"); forceMode = false; manualDisconnect = false; connectionAttempt = 0; lastDevice = null;
+        cancelLab("nova busca");
+        forceMode = false;
+        manualDisconnect = false;
+        connectionAttempt = 0;
+        lastDevice = null;
         if (!hasScanPermission()) { requestRequiredPermissions(); return; }
         if (scanner == null && adapter != null) scanner = adapter.getBluetoothLeScanner();
         if (scanner == null) { setStatus("Scanner BLE indisponível"); return; }
-        appendLog("Iniciando busca BLE..."); setStatus("Procurando o G28..."); scanner.startScan(scanCallback);
+        appendLog("Iniciando busca BLE...");
+        setStatus("Procurando o G28...");
+        scanner.startScan(scanCallback);
         handler.postDelayed(() -> { stopScan(); if (lastDevice == null) setStatus("G28 não encontrado"); }, SCAN_TIMEOUT_MS);
     }
 
     private void forceGatt() {
-        cancelLab("reconexão forçada"); forceMode = true; manualDisconnect = false; connectionAttempt = 0;
+        cancelLab("reconexão forçada");
+        forceMode = true;
+        manualDisconnect = false;
+        connectionAttempt = 0;
         if (lastDevice != null) connect(lastDevice, true); else startScan();
     }
 
-    private void stopScan() { if (scanner != null && hasScanPermission()) try { scanner.stopScan(scanCallback); } catch (Exception ignored) { } }
+    private void stopScan() {
+        if (scanner != null && hasScanPermission()) try { scanner.stopScan(scanCallback); } catch (Exception ignored) { }
+    }
 
     private void connect(BluetoothDevice device, boolean forced) {
         if (!hasConnectPermission()) { requestRequiredPermissions(); return; }
-        stopScan(); closeGattOnly(); lastDevice = device; connected = false; manualDisconnect = false; connectionAttempt++;
+        stopScan();
+        closeGattOnly();
+        lastDevice = device;
+        connected = false;
+        manualDisconnect = false;
+        connectionAttempt++;
         appendLog("CONNECT tentativa " + connectionAttempt + " | " + (forced ? "FORÇADO" : "NORMAL") + " | " + safeAddress(device));
         try {
             if (forced && Build.VERSION.SDK_INT >= 26) gatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE, BluetoothDevice.PHY_LE_1M_MASK);
             else if (Build.VERSION.SDK_INT >= 23) gatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE);
             else gatt = device.connectGatt(this, false, gattCallback);
             handler.postDelayed(connectionTimeout, CONNECT_TIMEOUT_MS);
-        } catch (Exception e) { appendLog("EXCEÇÃO connectGatt: " + e.getMessage()); }
+        } catch (Exception e) {
+            appendLog("EXCEÇÃO connectGatt: " + e.getMessage());
+        }
     }
 
     private void enqueue(GattOperation op) { operationQueue.offer(op); }
@@ -373,187 +501,338 @@ public class MainActivity extends Activity {
     private void runNextOperation() {
         if (!connected || gatt == null || operationRunning || !hasConnectPermission()) return;
         GattOperation op = operationQueue.poll();
-        if (op == null) { setStatus("G28 pronto | MTU " + negotiatedMtu + " | " + writeChannels.size() + " canais TX"); updateSendState(); appendLog("FILA GATT concluída — captura ativa"); return; }
-        operationRunning = true; handler.removeCallbacks(operationTimeout); handler.postDelayed(operationTimeout, OP_TIMEOUT_MS); boolean started = false;
+        if (op == null) {
+            setStatus("G28 pronto | MTU " + negotiatedMtu + " | " + writeChannels.size() + " canais TX");
+            updateSendState();
+            appendLog("FILA GATT concluída — captura ativa");
+            return;
+        }
+        operationRunning = true;
+        handler.removeCallbacks(operationTimeout);
+        handler.postDelayed(operationTimeout, OP_TIMEOUT_MS);
+        boolean started = false;
         try {
-            if (op.type == OperationType.MTU) { started = gatt.requestMtu(op.mtu); appendLog("FILA MTU " + op.mtu + " iniciado=" + started); }
-            else if (op.type == OperationType.READ) { started = gatt.readCharacteristic(op.characteristic); appendLog("FILA READ [" + shortUuid(op.characteristic.getUuid()) + "] iniciado=" + started); }
-            else if (op.type == OperationType.NOTIFY) { started = startNotification(gatt, op.characteristic); appendLog("FILA NOTIFY [" + shortUuid(op.characteristic.getUuid()) + "] iniciado=" + started); }
-            else { started = startWrite(gatt, op.characteristic, op.data); String ch = shortUuid(op.characteristic.getUuid()), payload = bytesToHex(op.data); appendLog("TX [" + ch + "] " + payload + " iniciado=" + started); addEvent("TX", ch, payload, "started=" + started); }
-        } catch (Exception e) { appendLog("FILA EXCEÇÃO: " + e.getMessage()); }
+            if (op.type == OperationType.MTU) {
+                started = gatt.requestMtu(op.mtu);
+                appendLog("FILA MTU " + op.mtu + " iniciado=" + started);
+            } else if (op.type == OperationType.READ) {
+                started = gatt.readCharacteristic(op.characteristic);
+                appendLog("FILA READ [" + shortUuid(op.characteristic.getUuid()) + "] iniciado=" + started);
+            } else if (op.type == OperationType.NOTIFY) {
+                started = startNotification(gatt, op.characteristic);
+                appendLog("FILA NOTIFY [" + shortUuid(op.characteristic.getUuid()) + "] iniciado=" + started);
+            } else {
+                started = startWrite(gatt, op.characteristic, op.data);
+                String ch = shortUuid(op.characteristic.getUuid());
+                String payload = bytesToHex(op.data);
+                appendLog("TX [" + ch + "] " + payload + " iniciado=" + started);
+                addEvent("TX", ch, payload, "started=" + started);
+            }
+        } catch (Exception e) {
+            appendLog("FILA EXCEÇÃO: " + e.getMessage());
+        }
         if (!started) completeOperation();
     }
 
     private boolean startNotification(BluetoothGatt currentGatt, BluetoothGattCharacteristic c) {
         if (!currentGatt.setCharacteristicNotification(c, true)) return false;
-        BluetoothGattDescriptor d = c.getDescriptor(CCCD); if (d == null) return false;
+        BluetoothGattDescriptor d = c.getDescriptor(CCCD);
+        if (d == null) return false;
         byte[] value = (c.getProperties() & BluetoothGattCharacteristic.PROPERTY_INDICATE) != 0 ? BluetoothGattDescriptor.ENABLE_INDICATION_VALUE : BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE;
         if (Build.VERSION.SDK_INT >= 33) return currentGatt.writeDescriptor(d, value) == BluetoothStatusCodes.SUCCESS;
-        d.setValue(value); return currentGatt.writeDescriptor(d);
+        d.setValue(value);
+        return currentGatt.writeDescriptor(d);
     }
 
     private boolean startWrite(BluetoothGatt currentGatt, BluetoothGattCharacteristic c, byte[] data) {
         boolean forceNoResponse = c.getUuid().equals(NUS_RX) && (c.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0;
         int type = forceNoResponse ? BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE : ((c.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE) != 0 ? BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT : BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE);
-        c.setWriteType(type); appendLog("TX MODE [" + shortUuid(c.getUuid()) + "] " + (type == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE ? "NO_RESPONSE" : "DEFAULT"));
+        c.setWriteType(type);
+        appendLog("TX MODE [" + shortUuid(c.getUuid()) + "] " + (type == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE ? "NO_RESPONSE" : "DEFAULT"));
         if (Build.VERSION.SDK_INT >= 33) {
             boolean ok = currentGatt.writeCharacteristic(c, data, type) == BluetoothStatusCodes.SUCCESS;
             if (ok && type == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) handler.postDelayed(this::completeOperation, 250);
             return ok;
         }
-        c.setValue(data); boolean ok = currentGatt.writeCharacteristic(c);
+        c.setValue(data);
+        boolean ok = currentGatt.writeCharacteristic(c);
         if (ok && type == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) handler.postDelayed(this::completeOperation, 250);
         return ok;
     }
 
-    private void completeOperation() { handler.removeCallbacks(operationTimeout); if (!operationRunning) return; operationRunning = false; handler.postDelayed(this::runNextOperation, 90); }
-    private void clearGattQueue() { handler.removeCallbacks(operationTimeout); operationQueue.clear(); operationRunning = false; }
-    private WriteChannel findNusRx() { for (WriteChannel c : writeChannels) if (c.characteristic.getUuid().equals(NUS_RX)) return c; return null; }
-
-    private void startLab(String mode, String command) {
-        if (!connected || operationRunning || !operationQueue.isEmpty()) { toast("Aguarde GATT ficar pronto"); return; }
-        if (!command.isEmpty() && findNusRx() == null) { toast("NUS-RX não disponível"); return; }
-        cancelLab("reinício");
-        labRunning = true; labMode = mode; activeCommand = command; labPhase = LabPhase.BASELINE;
-        baselineRxCount = 0; postTxRxCount = 0; labStartedAt = System.currentTimeMillis(); commandSentAt = 0;
-        appendLog("========== LAB v" + VERSION + " INICIADO: " + mode + " ==========");
-        appendLog("Fase 1: silêncio por 30000 ms" + (command.isEmpty() ? "" : "; depois TX único=" + command + " e observação por 30000 ms"));
-        addEvent("LAB_START", "NUS-RX", command, "mode=" + mode);
-        updateLabText(mode + " | silêncio 30 s"); updateSendState(); handler.postDelayed(finishBaseline, BASELINE_MS);
+    private void completeOperation() {
+        handler.removeCallbacks(operationTimeout);
+        if (!operationRunning) return;
+        operationRunning = false;
+        handler.postDelayed(this::runNextOperation, 90);
     }
 
-    private void finishLab(String reason) {
-        boolean wasRunning = labRunning; labRunning = false; labPhase = LabPhase.IDLE;
-        handler.removeCallbacks(finishBaseline); handler.removeCallbacks(finishObservation);
-        if (wasRunning) {
-            appendLog("========== LAB ENCERRADO: " + reason + " | baseline=" + baselineRxCount + " pós-TX=" + postTxRxCount + " ==========");
-            addEvent("LAB_STOP", "", "", reason + ";baseline=" + baselineRxCount + ";post=" + postTxRxCount);
-        }
-        updateLabText("Laboratório unitário parado: " + reason); updateSendState();
+    private void clearGattQueue() {
+        handler.removeCallbacks(operationTimeout);
+        operationQueue.clear();
+        operationRunning = false;
     }
 
-    private void cancelLab(String reason) { finishLab(reason); }
-    private void updateLabText(String text) { runOnUiThread(() -> { if (labView != null) labView.setText(text); }); }
+    private WriteChannel findNusRx() {
+        for (WriteChannel c : writeChannels) if (c.characteristic.getUuid().equals(NUS_RX)) return c;
+        return null;
+    }
 
     private void sendHex() {
         if (!connected || writeChannels.isEmpty() || labRunning) { toast(labRunning ? "Pare o ensaio primeiro" : "Conecte o G28 primeiro"); return; }
         try {
-            byte[] data = parseHex(hexInput.getText().toString()); if (data.length == 0) { toast("Digite HEX"); return; }
+            byte[] data = parseHex(hexInput.getText().toString());
+            if (data.length == 0) { toast("Digite HEX"); return; }
             if (data.length > Math.max(20, negotiatedMtu - 3)) { toast("Pacote grande demais"); return; }
-            int i = channelSpinner.getSelectedItemPosition(); if (i < 0 || i >= writeChannels.size()) return;
-            enqueue(GattOperation.write(writeChannels.get(i).characteristic, data)); runNextOperation();
-        } catch (IllegalArgumentException e) { toast(e.getMessage()); }
+            int i = channelSpinner.getSelectedItemPosition();
+            if (i < 0 || i >= writeChannels.size()) return;
+            enqueue(GattOperation.write(writeChannels.get(i).characteristic, data));
+            runNextOperation();
+        } catch (IllegalArgumentException e) {
+            toast(e.getMessage());
+        }
     }
 
     private byte[] parseHex(String input) {
         String clean = input == null ? "" : input.replaceAll("(?i)0x", "").replaceAll("[^0-9A-Fa-f]", "");
-        if (clean.isEmpty()) return new byte[0]; if ((clean.length() & 1) != 0) throw new IllegalArgumentException("HEX inválido");
-        byte[] out = new byte[clean.length() / 2]; for (int i = 0; i < clean.length(); i += 2) out[i / 2] = (byte) Integer.parseInt(clean.substring(i, i + 2), 16); return out;
+        if (clean.isEmpty()) return new byte[0];
+        if ((clean.length() & 1) != 0) throw new IllegalArgumentException("HEX inválido");
+        byte[] out = new byte[clean.length() / 2];
+        for (int i = 0; i < clean.length(); i += 2) out[i / 2] = (byte) Integer.parseInt(clean.substring(i, i + 2), 16);
+        return out;
     }
 
     private void addMarker() {
-        String note = markerInput.getText().toString().trim(); if (note.isEmpty()) note = "marcador manual";
-        appendLog("========== MARCADOR: " + note + " =========="); synchronized (rxBuffer) { rxBuffer.append(timestamp()).append("  MARKER ").append(note).append('\n'); }
-        addEvent("MARKER", "", "", note); markerInput.setText(""); toast("Marcador registrado");
+        String note = markerInput.getText().toString().trim();
+        if (note.isEmpty()) note = "marcador manual";
+        appendLog("========== MARCADOR: " + note + " ==========");
+        synchronized (rxBuffer) { rxBuffer.append(timestamp()).append("  MARKER ").append(note).append('\n'); }
+        addEvent("MARKER", "", "", note);
+        markerInput.setText("");
+        toast("Marcador registrado");
     }
 
     private void recordRx(String type, String channel, String payload, String note) {
-        rxPacketCount++; String signature = type + "|" + channel + "|" + payload; Integer count = packetCounts.get(signature); packetCounts.put(signature, count == null ? 1 : count + 1);
+        rxPacketCount++;
+        String signature = type + "|" + channel + "|" + payload;
+        Integer count = packetCounts.get(signature);
+        packetCounts.put(signature, count == null ? 1 : count + 1);
         synchronized (rxBuffer) { rxBuffer.append(timestamp()).append("  RX ").append(type).append(" [").append(channel).append("] ").append(payload).append('\n'); }
-        addEvent("RX_" + type, channel, payload, note); runOnUiThread(() -> rxSummaryView.setText("RX: " + rxPacketCount + " pacotes | " + packetCounts.size() + " padrões"));
+        addEvent("RX_" + type, channel, payload, note);
+        runOnUiThread(() -> rxSummaryView.setText("RX: " + rxPacketCount + " pacotes | " + packetCounts.size() + " padrões"));
     }
 
-    private void addEvent(String type, String channel, String payload, String note) { synchronized (sessionEvents) { sessionEvents.add(new SessionEvent(System.currentTimeMillis(), type, channel, payload, note)); } }
+    private void addEvent(String type, String channel, String payload, String note) {
+        synchronized (sessionEvents) { sessionEvents.add(new SessionEvent(System.currentTimeMillis(), type, channel, payload, note)); }
+    }
 
     private void clearSession() {
-        cancelLab("sessão limpa"); synchronized (rxBuffer) { rxBuffer.setLength(0); } synchronized (sessionEvents) { sessionEvents.clear(); }
-        packetCounts.clear(); observationMap.clear(); rxPacketCount = 0; sessionStartedAt = System.currentTimeMillis(); rxSummaryView.setText("RX: 0 pacotes | 0 padrões"); appendLog("SESSÃO DE CAPTURA LIMPA");
+        cancelLab("sessão limpa");
+        synchronized (rxBuffer) { rxBuffer.setLength(0); }
+        synchronized (sessionEvents) { sessionEvents.clear(); }
+        packetCounts.clear();
+        observationMap.clear();
+        rxPacketCount = 0;
+        sessionStartedAt = System.currentTimeMillis();
+        rxSummaryView.setText("RX: 0 pacotes | 0 padrões");
+        appendLog("SESSÃO DE CAPTURA LIMPA");
     }
 
     private void shareLog() {
-        String text; synchronized (rxBuffer) { text = "ORBIS v" + VERSION + " — LAB UNITÁRIO BLE\n\n" + rxBuffer + "\nLOG COMPLETO\n\n" + logBuffer; }
+        String text;
+        synchronized (rxBuffer) { text = "ORBIS v" + VERSION + " — LABORATÓRIO UNITÁRIO\n\n" + rxBuffer + "\nLOG COMPLETO\n\n" + logBuffer; }
         shareText("Orbis v" + VERSION + " G28", text, "Compartilhar captura");
     }
 
     private void shareJson() {
         try {
-            JSONObject root = new JSONObject(); JSONArray events = new JSONArray(); JSONObject patterns = new JSONObject(); JSONObject map = new JSONObject();
-            root.put("app", "Orbis Watch Lab"); root.put("version", VERSION); root.put("session_started_epoch_ms", sessionStartedAt); root.put("exported_epoch_ms", System.currentTimeMillis());
-            root.put("mtu", negotiatedMtu); root.put("rx_packet_count", rxPacketCount); root.put("lab_mode", labMode); root.put("lab_phase", labPhase.name()); root.put("active_command", activeCommand);
-            root.put("baseline_rx_count", baselineRxCount); root.put("post_tx_rx_count", postTxRxCount);
+            JSONObject root = new JSONObject();
+            JSONArray events = new JSONArray();
+            JSONObject patterns = new JSONObject();
+            JSONObject observations = new JSONObject();
+            root.put("app", "Orbis Watch Lab");
+            root.put("version", VERSION);
+            root.put("session_started_epoch_ms", sessionStartedAt);
+            root.put("exported_epoch_ms", System.currentTimeMillis());
+            root.put("mtu", negotiatedMtu);
+            root.put("rx_packet_count", rxPacketCount);
+            root.put("lab_mode", labMode);
+            root.put("lab_phase", labPhase.name());
+            root.put("baseline_rx_count", baselineRxCount);
+            root.put("post_tx_rx_count", postTxRxCount);
             synchronized (sessionEvents) {
                 for (SessionEvent e : sessionEvents) {
-                    JSONObject item = new JSONObject(); item.put("timestamp_epoch_ms", e.timestamp); item.put("time", formatTime(e.timestamp)); item.put("type", e.type); item.put("channel", e.channel); item.put("payload_hex", e.payload); item.put("note", e.note); events.put(item);
+                    JSONObject item = new JSONObject();
+                    item.put("timestamp_epoch_ms", e.timestamp);
+                    item.put("time", formatTime(e.timestamp));
+                    item.put("type", e.type);
+                    item.put("channel", e.channel);
+                    item.put("payload_hex", e.payload);
+                    item.put("note", e.note);
+                    events.put(item);
                 }
             }
             for (Map.Entry<String, Integer> entry : packetCounts.entrySet()) patterns.put(entry.getKey(), entry.getValue());
-            for (Map.Entry<String, String> entry : observationMap.entrySet()) map.put(entry.getKey(), entry.getValue());
-            root.put("events", events); root.put("pattern_counts", patterns); root.put("observation_map", map);
+            for (Map.Entry<String, String> entry : observationMap.entrySet()) observations.put(entry.getKey(), entry.getValue());
+            root.put("events", events);
+            root.put("pattern_counts", patterns);
+            root.put("observations", observations);
             shareText("Orbis v" + VERSION + " JSON", root.toString(2), "Compartilhar JSON");
-        } catch (Exception e) { toast("Falha no JSON: " + e.getMessage()); }
+        } catch (Exception e) {
+            toast("Falha no JSON: " + e.getMessage());
+        }
     }
 
     private void shareText(String subject, String text, String title) {
-        Intent i = new Intent(Intent.ACTION_SEND); i.setType("text/plain"); i.putExtra(Intent.EXTRA_SUBJECT, subject); i.putExtra(Intent.EXTRA_TEXT, text); startActivity(Intent.createChooser(i, title));
+        Intent i = new Intent(Intent.ACTION_SEND);
+        i.setType("text/plain");
+        i.putExtra(Intent.EXTRA_SUBJECT, subject);
+        i.putExtra(Intent.EXTRA_TEXT, text);
+        startActivity(Intent.createChooser(i, title));
     }
 
     private void refreshChannelSpinner() {
         runOnUiThread(() -> {
-            channelAdapter.clear(); for (WriteChannel c : writeChannels) channelAdapter.add(c.label); channelAdapter.notifyDataSetChanged();
-            int p = preferredChannel(); if (p >= 0) channelSpinner.setSelection(p); updateSendState();
+            channelAdapter.clear();
+            for (WriteChannel c : writeChannels) channelAdapter.add(c.label);
+            channelAdapter.notifyDataSetChanged();
+            int p = preferredChannel();
+            if (p >= 0) channelSpinner.setSelection(p);
+            updateSendState();
         });
     }
 
-    private int preferredChannel() { for (int i = 0; i < writeChannels.size(); i++) if (writeChannels.get(i).characteristic.getUuid().equals(NUS_RX)) return i; return writeChannels.isEmpty() ? -1 : 0; }
-    private String channelLabel(UUID u) { if (u.equals(NUS_RX)) return "NUS RX → NUS TX"; if (u.equals(FF02)) return "FF02 → FF01"; if (u.equals(FF13)) return "FF13 → FF14"; if (u.equals(FFF1)) return "FFF1"; return shortUuid(u); }
+    private int preferredChannel() {
+        for (int i = 0; i < writeChannels.size(); i++) if (writeChannels.get(i).characteristic.getUuid().equals(NUS_RX)) return i;
+        return writeChannels.isEmpty() ? -1 : 0;
+    }
+
+    private String channelLabel(UUID u) {
+        if (u.equals(NUS_RX)) return "NUS RX → NUS TX";
+        if (u.equals(FF02)) return "FF02 → FF01";
+        if (u.equals(FF13)) return "FF13 → FF14";
+        if (u.equals(FFF1)) return "FFF1";
+        return shortUuid(u);
+    }
 
     private void disconnectGatt() {
-        cancelLab("desconexão manual"); manualDisconnect = true; forceMode = false; stopScan(); clearGattQueue();
-        if (gatt != null && hasConnectPermission()) { try { gatt.disconnect(); } catch (Exception ignored) { } try { gatt.close(); } catch (Exception ignored) { } }
-        gatt = null; connected = false; writeChannels.clear(); refreshChannelSpinner(); setStatus("Desconectado"); appendLog("Conexão encerrada manualmente");
+        cancelLab("desconexão manual");
+        manualDisconnect = true;
+        forceMode = false;
+        stopScan();
+        clearGattQueue();
+        if (gatt != null && hasConnectPermission()) {
+            try { gatt.disconnect(); } catch (Exception ignored) { }
+            try { gatt.close(); } catch (Exception ignored) { }
+        }
+        gatt = null;
+        connected = false;
+        writeChannels.clear();
+        refreshChannelSpinner();
+        setStatus("Desconectado");
+        appendLog("Conexão encerrada manualmente");
     }
 
     private void closeGattOnly() {
-        cancelLab("GATT fechado"); clearGattQueue();
-        if (gatt != null && hasConnectPermission()) { try { gatt.disconnect(); } catch (Exception ignored) { } try { gatt.close(); } catch (Exception ignored) { } }
-        gatt = null; connected = false; updateSendState();
+        cancelLab("GATT fechado");
+        clearGattQueue();
+        if (gatt != null && hasConnectPermission()) {
+            try { gatt.disconnect(); } catch (Exception ignored) { }
+            try { gatt.close(); } catch (Exception ignored) { }
+        }
+        gatt = null;
+        connected = false;
+        updateSendState();
     }
 
     private void updateSendState() {
         runOnUiThread(() -> {
-            boolean ready = connected && !writeChannels.isEmpty(); boolean labReady = ready && findNusRx() != null && !labRunning;
-            if (sendButton != null) sendButton.setEnabled(ready && !labRunning); if (hexInput != null) hexInput.setEnabled(ready && !labRunning); if (channelSpinner != null) channelSpinner.setEnabled(ready && !labRunning);
-            if (silenceButton != null) silenceButton.setEnabled(ready && !labRunning); if (df00Button != null) df00Button.setEnabled(labReady); if (df0000Button != null) df0000Button.setEnabled(labReady); if (fe01Button != null) fe01Button.setEnabled(labReady); if (stopButton != null) stopButton.setEnabled(labRunning);
+            boolean ready = connected && !writeChannels.isEmpty();
+            if (sendButton != null) sendButton.setEnabled(ready && !labRunning);
+            if (hexInput != null) hexInput.setEnabled(ready && !labRunning);
+            if (channelSpinner != null) channelSpinner.setEnabled(ready && !labRunning);
+            boolean labReady = ready && !labRunning;
+            if (silenceButton != null) silenceButton.setEnabled(labReady);
+            if (df00Button != null) df00Button.setEnabled(labReady && findNusRx() != null);
+            if (df0000Button != null) df0000Button.setEnabled(labReady && findNusRx() != null);
+            if (fe01Button != null) fe01Button.setEnabled(labReady && findNusRx() != null);
+            if (stopButton != null) stopButton.setEnabled(labRunning);
         });
     }
 
-    private String safeName(BluetoothDevice d) { if (!hasConnectPermission()) return "(sem permissão)"; try { String n = d.getName(); return n == null ? "(sem nome)" : n; } catch (Exception e) { return "(protegido)"; } }
-    private String safeAddress(BluetoothDevice d) { if (!hasConnectPermission()) return "(protegido)"; try { return d.getAddress(); } catch (Exception e) { return "(protegido)"; } }
+    private void updateLabText(String text) {
+        runOnUiThread(() -> { if (labView != null) labView.setText(text); });
+    }
+
+    private String safeName(BluetoothDevice d) {
+        if (!hasConnectPermission()) return "(sem permissão)";
+        try { String n = d.getName(); return n == null ? "(sem nome)" : n; } catch (Exception e) { return "(protegido)"; }
+    }
+
+    private String safeAddress(BluetoothDevice d) {
+        if (!hasConnectPermission()) return "(protegido)";
+        try { return d.getAddress(); } catch (Exception e) { return "(protegido)"; }
+    }
+
     private static UUID uuid16(String v) { return UUID.fromString("0000" + v.toLowerCase(Locale.US) + "-0000-1000-8000-00805f9b34fb"); }
 
     private String shortUuid(UUID u) {
-        String s = u.toString().toUpperCase(Locale.US); if (s.endsWith("-0000-1000-8000-00805F9B34FB")) return s.substring(4, 8); if (u.equals(NUS_RX)) return "NUS-RX"; if (u.equals(NUS_TX)) return "NUS-TX"; return s;
+        String s = u.toString().toUpperCase(Locale.US);
+        if (s.endsWith("-0000-1000-8000-00805F9B34FB")) return s.substring(4, 8);
+        if (u.equals(NUS_RX)) return "NUS-RX";
+        if (u.equals(NUS_TX)) return "NUS-TX";
+        return s;
     }
 
-    private String bytesToHex(byte[] data) { if (data == null || data.length == 0) return "(vazio)"; StringBuilder b = new StringBuilder(); for (byte v : data) b.append(String.format(Locale.US, "%02X ", v & 0xFF)); return b.toString().trim(); }
+    private String bytesToHex(byte[] data) {
+        if (data == null || data.length == 0) return "(vazio)";
+        StringBuilder b = new StringBuilder();
+        for (byte v : data) b.append(String.format(Locale.US, "%02X ", v & 0xFF));
+        return b.toString().trim();
+    }
 
     private String propertiesText(int p) {
-        StringBuilder b = new StringBuilder(); if ((p & BluetoothGattCharacteristic.PROPERTY_READ) != 0) b.append("READ "); if ((p & BluetoothGattCharacteristic.PROPERTY_WRITE) != 0) b.append("WRITE "); if ((p & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) b.append("WRITE_NR "); if ((p & BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0) b.append("NOTIFY "); if ((p & BluetoothGattCharacteristic.PROPERTY_INDICATE) != 0) b.append("INDICATE "); return b.toString().trim();
+        StringBuilder b = new StringBuilder();
+        if ((p & BluetoothGattCharacteristic.PROPERTY_READ) != 0) b.append("READ ");
+        if ((p & BluetoothGattCharacteristic.PROPERTY_WRITE) != 0) b.append("WRITE ");
+        if ((p & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) b.append("WRITE_NR ");
+        if ((p & BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0) b.append("NOTIFY ");
+        if ((p & BluetoothGattCharacteristic.PROPERTY_INDICATE) != 0) b.append("INDICATE ");
+        return b.toString().trim();
     }
 
-    private String statusName(int s) { if (s == BluetoothGatt.GATT_SUCCESS) return "SUCCESS"; if (s == 1) return "GATT_FAILURE_1"; if (s == 133) return "GATT_ERROR_133"; if (s == 201) return "BUSY"; return "STATUS_" + s; }
-    private String stateName(int s) { if (s == BluetoothProfile.STATE_CONNECTED) return "CONNECTED"; if (s == BluetoothProfile.STATE_DISCONNECTED) return "DISCONNECTED"; return "STATE_" + s; }
+    private String statusName(int s) {
+        if (s == BluetoothGatt.GATT_SUCCESS) return "SUCCESS";
+        if (s == 1) return "GATT_FAILURE_1";
+        if (s == 133) return "GATT_ERROR_133";
+        if (s == 201) return "BUSY";
+        return "STATUS_" + s;
+    }
+
+    private String stateName(int s) {
+        if (s == BluetoothProfile.STATE_CONNECTED) return "CONNECTED";
+        if (s == BluetoothProfile.STATE_DISCONNECTED) return "DISCONNECTED";
+        return "STATE_" + s;
+    }
+
     private String timestamp() { return formatTime(System.currentTimeMillis()); }
     private String formatTime(long t) { return new SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(new Date(t)); }
     private void setStatus(String m) { runOnUiThread(() -> statusView.setText(m)); }
 
     private void appendLog(String m) {
-        String line = timestamp() + "  " + m; synchronized (logBuffer) { logBuffer.append(line).append('\n'); }
-        runOnUiThread(() -> { logView.append(line + "\n"); logScroll.post(() -> logScroll.fullScroll(View.FOCUS_DOWN)); });
+        String line = timestamp() + "  " + m;
+        synchronized (logBuffer) { logBuffer.append(line).append('\n'); }
+        runOnUiThread(() -> {
+            logView.append(line + "\n");
+            logScroll.post(() -> logScroll.fullScroll(View.FOCUS_DOWN));
+        });
     }
 
     private void toast(String m) { runOnUiThread(() -> Toast.makeText(this, m, Toast.LENGTH_LONG).show()); }
     private int dp(int v) { return (int) (v * getResources().getDisplayMetrics().density + 0.5f); }
 
-    @Override protected void onDestroy() { disconnectGatt(); super.onDestroy(); }
+    @Override protected void onDestroy() {
+        disconnectGatt();
+        super.onDestroy();
+    }
 }
