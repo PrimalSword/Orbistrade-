@@ -53,34 +53,23 @@ public class MainActivity extends Activity {
     private static final long SCAN_TIMEOUT_MS = 15000;
     private static final long CONNECT_TIMEOUT_MS = 12000;
     private static final long OP_TIMEOUT_MS = 5000;
-    private static final long PROBE_GAP_MS = 1400;
+    private static final long FE_GAP_MS = 1600;
 
     private static final UUID CCCD = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
-    private static final UUID FF01 = uuid16("ff01"), FF02 = uuid16("ff02"), FFF1 = uuid16("fff1"), FF13 = uuid16("ff13"), FF14 = uuid16("ff14");
+    private static final UUID FF02 = uuid16("ff02"), FFF1 = uuid16("fff1"), FF13 = uuid16("ff13");
     private static final UUID NUS_RX = UUID.fromString("6e400002-b5a3-f393-e0a9-e50e24dcca9f");
     private static final UUID NUS_TX = UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca9f");
-
-    /* Somente sondas curtas. Não usa FFF1/FF13, pacotes longos, OTA ou reset. */
-    private static final String[][] SAFE_PROBES = {
-            {"P01_ZERO", "00"},
-            {"P02_ONE", "01"},
-            {"P03_QUERY", "02"},
-            {"P04_A55A", "A5 5A"},
-            {"P05_55AA", "55 AA"},
-            {"P06_DF00", "DF 00"},
-            {"P07_DF0000", "DF 00 00"},
-            {"P08_FE01", "FE 01"}
-    };
 
     private BluetoothAdapter adapter;
     private BluetoothLeScanner scanner;
     private BluetoothGatt gatt;
     private BluetoothDevice lastDevice;
-    private TextView statusView, logView, rxSummaryView, probeView;
+
+    private TextView statusView, logView, rxSummaryView, explorerView;
     private ScrollView logScroll;
     private EditText hexInput, markerInput;
     private Spinner channelSpinner;
-    private Button sendButton, probeButton, stopProbeButton;
+    private Button sendButton, repeatButton, mapButton, stopButton;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final StringBuilder logBuffer = new StringBuilder(), rxBuffer = new StringBuilder();
@@ -88,14 +77,16 @@ public class MainActivity extends Activity {
     private final List<WriteChannel> writeChannels = new ArrayList<>();
     private final List<SessionEvent> sessionEvents = new ArrayList<>();
     private final Map<String, Integer> packetCounts = new LinkedHashMap<>();
+    private final Map<String, String> feResponses = new LinkedHashMap<>();
     private ArrayAdapter<String> channelAdapter;
 
     private boolean connected, manualDisconnect, forceMode, operationRunning;
-    private boolean probeRunning, probeResponseDetected;
+    private boolean explorerRunning;
     private int connectionAttempt, negotiatedMtu = 23, rxPacketCount;
-    private int probeChannelIndex, probeCommandIndex, probeSentCount;
-    private long sessionStartedAt;
-    private String lastProbeLabel = "", lastProbeChannel = "", lastProbePayload = "";
+    private int explorerIndex, explorerSentCount, explorerHitCount;
+    private long sessionStartedAt, lastExplorerTxAt;
+    private String[] explorerCommands = new String[0];
+    private String explorerMode = "", activeCommand = "", baselineResponse = "";
 
     private enum OperationType { MTU, READ, NOTIFY, WRITE }
 
@@ -141,29 +132,25 @@ public class MainActivity extends Activity {
         }
     };
 
-    private final Runnable nextProbe = new Runnable() {
+    private final Runnable nextExplorerCommand = new Runnable() {
         @Override public void run() {
-            if (!probeRunning || !connected || operationRunning || !operationQueue.isEmpty()) {
-                if (probeRunning) handler.postDelayed(this, 250);
-                return;
-            }
-            if (probeResponseDetected) { stopProbe("resposta detectada"); return; }
-            List<WriteChannel> channels = probeChannels();
-            if (channels.isEmpty()) { stopProbe("nenhum canal seguro disponível"); return; }
-            if (probeChannelIndex >= channels.size()) { stopProbe("matriz concluída sem notificação"); return; }
+            if (!explorerRunning) return;
+            if (!connected) { stopExplorer("desconectado"); return; }
+            if (operationRunning || !operationQueue.isEmpty()) { handler.postDelayed(this, 250); return; }
+            if (explorerIndex >= explorerCommands.length) { stopExplorer("sequência concluída"); return; }
 
-            WriteChannel channel = channels.get(probeChannelIndex);
-            String[] probe = SAFE_PROBES[probeCommandIndex];
-            byte[] data = parseHex(probe[1]);
-            lastProbeLabel = probe[0]; lastProbeChannel = channel.label; lastProbePayload = probe[1]; probeSentCount++;
-            appendLog("PROBE " + probeSentCount + " [" + probe[0] + "] via " + channel.label + " | " + probe[1]);
-            addEvent("PROBE", channel.label, probe[1], probe[0]);
-            updateProbeText("Executando " + probe[0] + " em " + channel.label + " | " + probeSentCount);
-            enqueue(GattOperation.write(channel.characteristic, data)); runNextOperation();
+            WriteChannel nus = findNusRx();
+            if (nus == null) { stopExplorer("NUS-RX indisponível"); return; }
 
-            probeCommandIndex++;
-            if (probeCommandIndex >= SAFE_PROBES.length) { probeCommandIndex = 0; probeChannelIndex++; }
-            handler.postDelayed(this, PROBE_GAP_MS);
+            activeCommand = explorerCommands[explorerIndex++];
+            lastExplorerTxAt = System.currentTimeMillis();
+            explorerSentCount++;
+            appendLog("FE TESTE " + explorerSentCount + "/" + explorerCommands.length + " TX=" + activeCommand);
+            addEvent("FE_TX", "NUS-RX", activeCommand, explorerMode);
+            updateExplorerText(explorerMode + " | " + explorerSentCount + "/" + explorerCommands.length + " | TX " + activeCommand);
+            enqueue(GattOperation.write(nus.characteristic, parseHex(activeCommand)));
+            runNextOperation();
+            handler.postDelayed(this, FE_GAP_MS);
         }
     };
 
@@ -191,7 +178,7 @@ public class MainActivity extends Activity {
                 return;
             }
             if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                connected = false; stopProbe("desconectado"); clearGattQueue(); addEvent("STATE", "", "", "DISCONNECTED " + statusName(status));
+                connected = false; stopExplorer("desconectado"); clearGattQueue(); addEvent("STATE", "", "", "DISCONNECTED " + statusName(status));
                 setStatus("Desconectado: " + statusName(status)); try { currentGatt.close(); } catch (Exception ignored) { }
                 if (gatt == currentGatt) gatt = null; updateSendState();
                 if (!manualDisconnect && forceMode && lastDevice != null && connectionAttempt < 3) handler.postDelayed(() -> connect(lastDevice, true), 1500);
@@ -225,11 +212,16 @@ public class MainActivity extends Activity {
         @Override public void onCharacteristicChanged(BluetoothGatt currentGatt, BluetoothGattCharacteristic c) {
             String channel = shortUuid(c.getUuid()), payload = bytesToHex(c.getValue());
             appendLog("RX NOTIFY [" + channel + "] " + payload); recordRx("NOTIFY", channel, payload, "");
-            if (probeRunning) {
-                probeResponseDetected = true;
-                appendLog("*** RESPOSTA AO PROBE: " + lastProbeLabel + " via " + lastProbeChannel + " TX=" + lastProbePayload + " RX[" + channel + "]=" + payload + " ***");
-                addEvent("PROBE_HIT", channel, payload, lastProbeLabel + " via " + lastProbeChannel + " TX=" + lastProbePayload);
-                stopProbe("resposta detectada em " + channel);
+            if (explorerRunning && c.getUuid().equals(NUS_TX) && !activeCommand.isEmpty()) {
+                long latency = System.currentTimeMillis() - lastExplorerTxAt;
+                explorerHitCount++;
+                String comparison;
+                if (baselineResponse.isEmpty()) { baselineResponse = payload; comparison = "BASELINE"; }
+                else comparison = baselineResponse.equals(payload) ? "IGUAL_A_BASELINE" : "DIFERENTE_DA_BASELINE";
+                feResponses.put(activeCommand, payload);
+                appendLog("*** FE RESPOSTA TX=" + activeCommand + " RX=" + payload + " LATÊNCIA=" + latency + "ms " + comparison + " ***");
+                addEvent("FE_RX", channel, payload, "tx=" + activeCommand + ";latency_ms=" + latency + ";" + comparison);
+                updateExplorerText(explorerMode + " | respostas " + explorerHitCount + " | último " + activeCommand + " → " + comparison);
             }
         }
         @Override public void onCharacteristicWrite(BluetoothGatt currentGatt, BluetoothGattCharacteristic c, int status) { appendLog("TX CALLBACK [" + shortUuid(c.getUuid()) + "] status=" + statusName(status)); completeOperation(); }
@@ -238,18 +230,19 @@ public class MainActivity extends Activity {
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState); sessionStartedAt = System.currentTimeMillis(); buildInterface(); initializeBluetooth(); requestRequiredPermissions();
-        appendLog("Orbis Watch Lab v0.7 iniciado | Android " + Build.VERSION.RELEASE + " API " + Build.VERSION.SDK_INT);
+        appendLog("Orbis Watch Lab v0.8 iniciado | Android " + Build.VERSION.RELEASE + " API " + Build.VERSION.SDK_INT);
     }
 
     private void buildInterface() {
         LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(dp(8), dp(8), dp(8), dp(8));
-        TextView title = new TextView(this); title.setText("ORBIS WATCH LAB v0.7"); title.setTextSize(20); title.setTypeface(Typeface.DEFAULT_BOLD); root.addView(title);
+        TextView title = new TextView(this); title.setText("ORBIS WATCH LAB v0.8"); title.setTextSize(20); title.setTypeface(Typeface.DEFAULT_BOLD); root.addView(title);
         statusView = new TextView(this); statusView.setText("Inicializando Bluetooth..."); statusView.setTextSize(13); root.addView(statusView);
         LinearLayout row1 = new LinearLayout(this); row1.addView(button("PROCURAR", v -> startScan()), weight()); row1.addView(button("FORÇAR", v -> forceGatt()), weight()); row1.addView(button("DESCONECTAR", v -> disconnectGatt()), weight()); root.addView(row1);
         LinearLayout row2 = new LinearLayout(this); row2.addView(button("LOG", v -> shareLog()), weight()); row2.addView(button("JSON", v -> shareJson()), weight()); row2.addView(button("LIMPAR", v -> clearSession()), weight()); root.addView(row2);
         rxSummaryView = new TextView(this); rxSummaryView.setText("RX: 0 pacotes | 0 padrões"); rxSummaryView.setTypeface(Typeface.DEFAULT_BOLD); root.addView(rxSummaryView);
-        probeView = new TextView(this); probeView.setText("Sonda controlada parada"); root.addView(probeView);
-        LinearLayout probeRow = new LinearLayout(this); probeButton = button("INICIAR SONDA SEGURA", v -> startProbe()); stopProbeButton = button("PARAR", v -> stopProbe("parada manual")); probeRow.addView(probeButton, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 2)); probeRow.addView(stopProbeButton, weight()); root.addView(probeRow);
+        explorerView = new TextView(this); explorerView.setText("Explorador FE parado"); root.addView(explorerView);
+        LinearLayout feRow = new LinearLayout(this); repeatButton = button("REPETIR FE01 ×5", v -> startRepeatFe01()); mapButton = button("MAPEAR FE00–0F", v -> startFeMap()); feRow.addView(repeatButton, weight()); feRow.addView(mapButton, weight()); root.addView(feRow);
+        stopButton = button("PARAR EXPLORADOR", v -> stopExplorer("parada manual")); root.addView(stopButton);
         LinearLayout markerRow = new LinearLayout(this); markerInput = new EditText(this); markerInput.setHint("Marcador"); markerInput.setSingleLine(true); markerRow.addView(markerInput, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 3)); markerRow.addView(button("MARCAR", v -> addMarker()), weight()); root.addView(markerRow);
         channelSpinner = new Spinner(this); channelAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, new ArrayList<>()); channelSpinner.setAdapter(channelAdapter); root.addView(channelSpinner);
         LinearLayout sendRow = new LinearLayout(this); hexInput = new EditText(this); hexInput.setHint("HEX manual conhecido"); hexInput.setSingleLine(true); hexInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS); sendButton = button("ENVIAR", v -> sendHex()); sendRow.addView(hexInput, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 3)); sendRow.addView(sendButton, weight()); root.addView(sendRow);
@@ -279,7 +272,7 @@ public class MainActivity extends Activity {
     private boolean hasConnectPermission() { return Build.VERSION.SDK_INT < 31 || checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED; }
 
     private void startScan() {
-        stopProbe("nova busca"); forceMode = false; manualDisconnect = false; connectionAttempt = 0; lastDevice = null;
+        stopExplorer("nova busca"); forceMode = false; manualDisconnect = false; connectionAttempt = 0; lastDevice = null;
         if (!hasScanPermission()) { requestRequiredPermissions(); return; }
         if (scanner == null && adapter != null) scanner = adapter.getBluetoothLeScanner();
         if (scanner == null) { setStatus("Scanner BLE indisponível"); return; }
@@ -288,7 +281,7 @@ public class MainActivity extends Activity {
     }
 
     private void forceGatt() {
-        stopProbe("reconexão forçada"); forceMode = true; manualDisconnect = false; connectionAttempt = 0;
+        stopExplorer("reconexão forçada"); forceMode = true; manualDisconnect = false; connectionAttempt = 0;
         if (lastDevice != null) connect(lastDevice, true); else { if (!hasScanPermission()) { requestRequiredPermissions(); return; } if (scanner == null && adapter != null) scanner = adapter.getBluetoothLeScanner(); if (scanner != null) scanner.startScan(scanCallback); }
     }
 
@@ -343,35 +336,39 @@ public class MainActivity extends Activity {
     private void completeOperation() { handler.removeCallbacks(operationTimeout); if (!operationRunning) return; operationRunning = false; handler.postDelayed(this::runNextOperation, 90); }
     private void clearGattQueue() { handler.removeCallbacks(operationTimeout); operationQueue.clear(); operationRunning = false; }
 
-    private List<WriteChannel> probeChannels() {
-        List<WriteChannel> result = new ArrayList<>();
-        for (WriteChannel c : writeChannels) {
-            UUID u = c.characteristic.getUuid();
-            if (u.equals(NUS_RX) || u.equals(FF02)) result.add(c);
-        }
-        return result;
+    private WriteChannel findNusRx() { for (WriteChannel c : writeChannels) if (c.characteristic.getUuid().equals(NUS_RX)) return c; return null; }
+
+    private void startRepeatFe01() { startExplorer("REPETIÇÃO FE01", new String[]{"FE 01", "FE 01", "FE 01", "FE 01", "FE 01"}); }
+
+    private void startFeMap() {
+        String[] commands = new String[16];
+        for (int i = 0; i < commands.length; i++) commands[i] = String.format(Locale.US, "FE %02X", i);
+        startExplorer("MAPA FE00–0F", commands);
     }
 
-    private void startProbe() {
+    private void startExplorer(String mode, String[] commands) {
         if (!connected || operationRunning || !operationQueue.isEmpty()) { toast("Aguarde GATT ficar pronto"); return; }
-        if (probeChannels().isEmpty()) { toast("NUS RX/FF02 não disponíveis"); return; }
-        probeRunning = true; probeResponseDetected = false; probeChannelIndex = 0; probeCommandIndex = 0; probeSentCount = 0;
-        lastProbeLabel = lastProbeChannel = lastProbePayload = "";
-        appendLog("========== SONDA CONTROLADA INICIADA ==========");
-        appendLog("Escopo: NUS-RX e FF02; 8 pacotes curtos; FFF1/FF13/OTA excluídos");
-        addEvent("PROBE_START", "", "", "controlled-safe-set"); updateProbeText("Sonda ativa"); updateSendState(); handler.post(nextProbe);
+        if (findNusRx() == null) { toast("NUS-RX não disponível"); return; }
+        stopExplorer("reinício"); explorerRunning = true; explorerMode = mode; explorerCommands = commands; explorerIndex = 0; explorerSentCount = 0; explorerHitCount = 0; activeCommand = ""; baselineResponse = ""; feResponses.clear();
+        appendLog("========== EXPLORADOR FE INICIADO: " + mode + " ==========");
+        appendLog("Canal exclusivo NUS-RX; intervalo " + FE_GAP_MS + " ms; sem FFF1/FF13/FF02/OTA/reset");
+        addEvent("FE_START", "NUS-RX", "", mode); updateExplorerText(mode + " iniciado"); updateSendState(); handler.post(nextExplorerCommand);
     }
 
-    private void stopProbe(String reason) {
-        boolean wasRunning = probeRunning; probeRunning = false; handler.removeCallbacks(nextProbe);
-        if (wasRunning) { appendLog("========== SONDA ENCERRADA: " + reason + " =========="); addEvent("PROBE_STOP", "", "", reason); }
-        updateProbeText("Sonda parada: " + reason); updateSendState();
+    private void stopExplorer(String reason) {
+        boolean wasRunning = explorerRunning; explorerRunning = false; handler.removeCallbacks(nextExplorerCommand);
+        if (wasRunning) {
+            appendLog("========== EXPLORADOR FE ENCERRADO: " + reason + " | TX=" + explorerSentCount + " RX=" + explorerHitCount + " ==========");
+            for (Map.Entry<String, String> e : feResponses.entrySet()) appendLog("FE MAPA " + e.getKey() + " => " + e.getValue());
+            addEvent("FE_STOP", "", "", reason + ";tx=" + explorerSentCount + ";rx=" + explorerHitCount);
+        }
+        updateExplorerText("Explorador parado: " + reason); updateSendState();
     }
 
-    private void updateProbeText(String text) { runOnUiThread(() -> { if (probeView != null) probeView.setText(text); }); }
+    private void updateExplorerText(String text) { runOnUiThread(() -> { if (explorerView != null) explorerView.setText(text); }); }
 
     private void sendHex() {
-        if (!connected || writeChannels.isEmpty() || probeRunning) { toast(probeRunning ? "Pare a sonda primeiro" : "Conecte o G28 primeiro"); return; }
+        if (!connected || writeChannels.isEmpty() || explorerRunning) { toast(explorerRunning ? "Pare o explorador primeiro" : "Conecte o G28 primeiro"); return; }
         try {
             byte[] data = parseHex(hexInput.getText().toString()); if (data.length == 0) { toast("Digite HEX"); return; }
             if (data.length > Math.max(20, negotiatedMtu - 3)) { toast("Pacote grande demais"); return; }
@@ -399,27 +396,29 @@ public class MainActivity extends Activity {
     }
 
     private void addEvent(String type, String channel, String payload, String note) { synchronized (sessionEvents) { sessionEvents.add(new SessionEvent(System.currentTimeMillis(), type, channel, payload, note)); } }
-    private void clearSession() { stopProbe("sessão limpa"); synchronized (rxBuffer) { rxBuffer.setLength(0); } synchronized (sessionEvents) { sessionEvents.clear(); } packetCounts.clear(); rxPacketCount = 0; sessionStartedAt = System.currentTimeMillis(); rxSummaryView.setText("RX: 0 pacotes | 0 padrões"); appendLog("SESSÃO DE CAPTURA LIMPA"); }
+    private void clearSession() { stopExplorer("sessão limpa"); synchronized (rxBuffer) { rxBuffer.setLength(0); } synchronized (sessionEvents) { sessionEvents.clear(); } packetCounts.clear(); feResponses.clear(); rxPacketCount = 0; sessionStartedAt = System.currentTimeMillis(); rxSummaryView.setText("RX: 0 pacotes | 0 padrões"); appendLog("SESSÃO DE CAPTURA LIMPA"); }
 
-    private void shareLog() { String text; synchronized (rxBuffer) { text = "ORBIS v0.7 — RX E PROBES\n\n" + rxBuffer + "\nLOG COMPLETO\n\n" + logBuffer; } shareText("Orbis v0.7 G28", text, "Compartilhar captura"); }
+    private void shareLog() { String text; synchronized (rxBuffer) { text = "ORBIS v0.8 — EXPLORADOR FE\n\n" + rxBuffer + "\nLOG COMPLETO\n\n" + logBuffer; } shareText("Orbis v0.8 G28", text, "Compartilhar captura"); }
     private void shareJson() {
         try {
-            JSONObject root = new JSONObject(); JSONArray events = new JSONArray(); JSONObject patterns = new JSONObject();
-            root.put("app", "Orbis Watch Lab"); root.put("version", "0.7"); root.put("session_started_epoch_ms", sessionStartedAt); root.put("exported_epoch_ms", System.currentTimeMillis()); root.put("mtu", negotiatedMtu); root.put("rx_packet_count", rxPacketCount); root.put("probe_sent_count", probeSentCount); root.put("probe_response_detected", probeResponseDetected);
+            JSONObject root = new JSONObject(); JSONArray events = new JSONArray(); JSONObject patterns = new JSONObject(); JSONObject map = new JSONObject();
+            root.put("app", "Orbis Watch Lab"); root.put("version", "0.8"); root.put("session_started_epoch_ms", sessionStartedAt); root.put("exported_epoch_ms", System.currentTimeMillis()); root.put("mtu", negotiatedMtu); root.put("rx_packet_count", rxPacketCount); root.put("fe_mode", explorerMode); root.put("fe_sent_count", explorerSentCount); root.put("fe_hit_count", explorerHitCount);
             synchronized (sessionEvents) { for (SessionEvent e : sessionEvents) { JSONObject item = new JSONObject(); item.put("timestamp_epoch_ms", e.timestamp); item.put("time", formatTime(e.timestamp)); item.put("type", e.type); item.put("channel", e.channel); item.put("payload_hex", e.payload); item.put("note", e.note); events.put(item); } }
-            for (Map.Entry<String, Integer> entry : packetCounts.entrySet()) patterns.put(entry.getKey(), entry.getValue()); root.put("events", events); root.put("pattern_counts", patterns);
-            shareText("Orbis v0.7 JSON", root.toString(2), "Compartilhar JSON");
+            for (Map.Entry<String, Integer> entry : packetCounts.entrySet()) patterns.put(entry.getKey(), entry.getValue());
+            for (Map.Entry<String, String> entry : feResponses.entrySet()) map.put(entry.getKey(), entry.getValue());
+            root.put("events", events); root.put("pattern_counts", patterns); root.put("fe_response_map", map);
+            shareText("Orbis v0.8 JSON", root.toString(2), "Compartilhar JSON");
         } catch (Exception e) { toast("Falha no JSON: " + e.getMessage()); }
     }
     private void shareText(String subject, String text, String title) { Intent i = new Intent(Intent.ACTION_SEND); i.setType("text/plain"); i.putExtra(Intent.EXTRA_SUBJECT, subject); i.putExtra(Intent.EXTRA_TEXT, text); startActivity(Intent.createChooser(i, title)); }
 
     private void refreshChannelSpinner() { runOnUiThread(() -> { channelAdapter.clear(); for (WriteChannel c : writeChannels) channelAdapter.add(c.label); channelAdapter.notifyDataSetChanged(); int p = preferredChannel(); if (p >= 0) channelSpinner.setSelection(p); updateSendState(); }); }
-    private int preferredChannel() { for (int i = 0; i < writeChannels.size(); i++) if (writeChannels.get(i).characteristic.getUuid().equals(NUS_RX)) return i; for (int i = 0; i < writeChannels.size(); i++) if (writeChannels.get(i).characteristic.getUuid().equals(FF02)) return i; return writeChannels.isEmpty() ? -1 : 0; }
+    private int preferredChannel() { for (int i = 0; i < writeChannels.size(); i++) if (writeChannels.get(i).characteristic.getUuid().equals(NUS_RX)) return i; return writeChannels.isEmpty() ? -1 : 0; }
     private String channelLabel(UUID u) { if (u.equals(NUS_RX)) return "NUS RX → NUS TX"; if (u.equals(FF02)) return "FF02 → FF01"; if (u.equals(FF13)) return "FF13 → FF14"; if (u.equals(FFF1)) return "FFF1"; return shortUuid(u); }
 
-    private void disconnectGatt() { stopProbe("desconexão manual"); manualDisconnect = true; forceMode = false; stopScan(); clearGattQueue(); if (gatt != null && hasConnectPermission()) { try { gatt.disconnect(); } catch (Exception ignored) { } try { gatt.close(); } catch (Exception ignored) { } } gatt = null; connected = false; writeChannels.clear(); refreshChannelSpinner(); setStatus("Desconectado"); appendLog("Conexão encerrada manualmente"); }
-    private void closeGattOnly() { stopProbe("GATT fechado"); clearGattQueue(); if (gatt != null && hasConnectPermission()) { try { gatt.disconnect(); } catch (Exception ignored) { } try { gatt.close(); } catch (Exception ignored) { } } gatt = null; connected = false; updateSendState(); }
-    private void updateSendState() { runOnUiThread(() -> { boolean ready = connected && !writeChannels.isEmpty(); if (sendButton != null) sendButton.setEnabled(ready && !probeRunning); if (hexInput != null) hexInput.setEnabled(ready && !probeRunning); if (channelSpinner != null) channelSpinner.setEnabled(ready && !probeRunning); if (probeButton != null) probeButton.setEnabled(ready && !probeRunning); if (stopProbeButton != null) stopProbeButton.setEnabled(probeRunning); }); }
+    private void disconnectGatt() { stopExplorer("desconexão manual"); manualDisconnect = true; forceMode = false; stopScan(); clearGattQueue(); if (gatt != null && hasConnectPermission()) { try { gatt.disconnect(); } catch (Exception ignored) { } try { gatt.close(); } catch (Exception ignored) { } } gatt = null; connected = false; writeChannels.clear(); refreshChannelSpinner(); setStatus("Desconectado"); appendLog("Conexão encerrada manualmente"); }
+    private void closeGattOnly() { stopExplorer("GATT fechado"); clearGattQueue(); if (gatt != null && hasConnectPermission()) { try { gatt.disconnect(); } catch (Exception ignored) { } try { gatt.close(); } catch (Exception ignored) { } } gatt = null; connected = false; updateSendState(); }
+    private void updateSendState() { runOnUiThread(() -> { boolean ready = connected && !writeChannels.isEmpty(); if (sendButton != null) sendButton.setEnabled(ready && !explorerRunning); if (hexInput != null) hexInput.setEnabled(ready && !explorerRunning); if (channelSpinner != null) channelSpinner.setEnabled(ready && !explorerRunning); if (repeatButton != null) repeatButton.setEnabled(ready && findNusRx() != null && !explorerRunning); if (mapButton != null) mapButton.setEnabled(ready && findNusRx() != null && !explorerRunning); if (stopButton != null) stopButton.setEnabled(explorerRunning); }); }
 
     private String safeName(BluetoothDevice d) { if (!hasConnectPermission()) return "(sem permissão)"; try { String n = d.getName(); return n == null ? "(sem nome)" : n; } catch (Exception e) { return "(protegido)"; } }
     private String safeAddress(BluetoothDevice d) { if (!hasConnectPermission()) return "(protegido)"; try { return d.getAddress(); } catch (Exception e) { return "(protegido)"; } }
@@ -427,7 +426,7 @@ public class MainActivity extends Activity {
     private String shortUuid(UUID u) { String s = u.toString().toUpperCase(Locale.US); if (s.endsWith("-0000-1000-8000-00805F9B34FB")) return s.substring(4, 8); if (u.equals(NUS_RX)) return "NUS-RX"; if (u.equals(NUS_TX)) return "NUS-TX"; return s; }
     private String bytesToHex(byte[] data) { if (data == null || data.length == 0) return "(vazio)"; StringBuilder b = new StringBuilder(); for (byte v : data) b.append(String.format(Locale.US, "%02X ", v & 0xFF)); return b.toString().trim(); }
     private String propertiesText(int p) { StringBuilder b = new StringBuilder(); if ((p & BluetoothGattCharacteristic.PROPERTY_READ) != 0) b.append("READ "); if ((p & BluetoothGattCharacteristic.PROPERTY_WRITE) != 0) b.append("WRITE "); if ((p & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) b.append("WRITE_NR "); if ((p & BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0) b.append("NOTIFY "); if ((p & BluetoothGattCharacteristic.PROPERTY_INDICATE) != 0) b.append("INDICATE "); return b.toString().trim(); }
-    private String statusName(int s) { if (s == BluetoothGatt.GATT_SUCCESS) return "SUCCESS"; if (s == 133) return "GATT_ERROR_133"; if (s == 201) return "BUSY"; return "STATUS_" + s; }
+    private String statusName(int s) { if (s == BluetoothGatt.GATT_SUCCESS) return "SUCCESS"; if (s == 1) return "GATT_FAILURE_1"; if (s == 133) return "GATT_ERROR_133"; if (s == 201) return "BUSY"; return "STATUS_" + s; }
     private String stateName(int s) { if (s == BluetoothProfile.STATE_CONNECTED) return "CONNECTED"; if (s == BluetoothProfile.STATE_DISCONNECTED) return "DISCONNECTED"; return "STATE_" + s; }
     private String timestamp() { return formatTime(System.currentTimeMillis()); }
     private String formatTime(long t) { return new SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(new Date(t)); }
