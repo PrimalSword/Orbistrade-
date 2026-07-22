@@ -1,9 +1,6 @@
 name: Orbis v0.8.1 patch
 
 on:
-  push:
-    paths:
-      - '.github/workflows/orbis-v081-patch.yml'
   workflow_dispatch:
 
 permissions:
@@ -13,41 +10,44 @@ jobs:
   patch:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Apply v0.8.1 transport and sequence patch
-        shell: python
+
+      - name: Apply source patch
+        shell: bash
         run: |
+          python3 <<'PY'
           from pathlib import Path
 
           path = Path('app/src/main/java/com/orbiswatchlab/MainActivity.java')
           text = path.read_text(encoding='utf-8')
 
-          replacements = {
-              'private static final long FE_GAP_MS = 1600;':
-                  'private static final long FE_GAP_MS = 1800;',
-              'appendLog("Orbis Watch Lab v0.8 iniciado | Android " + Build.VERSION.RELEASE + " API " + Build.VERSION.SDK_INT);':
-                  'appendLog("Orbis Watch Lab v0.8.1 iniciado | Android " + Build.VERSION.RELEASE + " API " + Build.VERSION.SDK_INT);',
-              'title.setText("ORBIS WATCH LAB v0.8");':
-                  'title.setText("ORBIS WATCH LAB v0.8.1");',
-              'mapButton = button("MAPEAR FE00–0F", v -> startFeMap());':
-                  'mapButton = button("SEQUÊNCIA DF/FE ×3", v -> startFeMap());',
-              '''    private void startFeMap() {
+          replacements = [
+              ('private static final long FE_GAP_MS = 1600;',
+               'private static final long FE_GAP_MS = 1800;'),
+              ('appendLog("Orbis Watch Lab v0.8 iniciado | Android " + Build.VERSION.RELEASE + " API " + Build.VERSION.SDK_INT);',
+               'appendLog("Orbis Watch Lab v0.8.1 iniciado | Android " + Build.VERSION.RELEASE + " API " + Build.VERSION.SDK_INT);'),
+              ('title.setText("ORBIS WATCH LAB v0.8");',
+               'title.setText("ORBIS WATCH LAB v0.8.1");'),
+              ('mapButton = button("MAPEAR FE00–0F", v -> startFeMap());',
+               'mapButton = button("SEQUÊNCIA DF/FE ×3", v -> startFeMap());'),
+              ('''    private void startFeMap() {
           String[] commands = new String[16];
           for (int i = 0; i < commands.length; i++) commands[i] = String.format(Locale.US, "FE %02X", i);
           startExplorer("MAPA FE00–0F", commands);
-      }''':
-                  '''    private void startFeMap() {
+      }''',
+               '''    private void startFeMap() {
           startExplorer("SEQUÊNCIA DF/FE ×3", new String[]{
                   "DF 00", "DF 00 00", "FE 01",
                   "DF 00", "DF 00 00", "FE 01",
                   "DF 00", "DF 00 00", "FE 01"
           });
-      }''',
-              'appendLog("Canal exclusivo NUS-RX; intervalo " + FE_GAP_MS + " ms; sem FFF1/FF13/FF02/OTA/reset");':
-                  'appendLog("Canal exclusivo NUS-RX em WRITE_NO_RESPONSE; intervalo " + FE_GAP_MS + " ms; sem FFF1/FF13/FF02/OTA/reset");',
-              '''    private boolean startWrite(BluetoothGatt currentGatt, BluetoothGattCharacteristic c, byte[] data) {
+      }'''),
+              ('appendLog("Canal exclusivo NUS-RX; intervalo " + FE_GAP_MS + " ms; sem FFF1/FF13/FF02/OTA/reset");',
+               'appendLog("Canal exclusivo NUS-RX em WRITE_NO_RESPONSE; intervalo " + FE_GAP_MS + " ms; sem FFF1/FF13/FF02/OTA/reset");'),
+              ('''    private boolean startWrite(BluetoothGatt currentGatt, BluetoothGattCharacteristic c, byte[] data) {
           int type = (c.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE) != 0 ? BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT : BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE;
           c.setWriteType(type);
           if (Build.VERSION.SDK_INT >= 33) {
@@ -56,8 +56,8 @@ jobs:
               return ok;
           }
           c.setValue(data); boolean ok = currentGatt.writeCharacteristic(c); if (ok && type == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) handler.postDelayed(this::completeOperation, 180); return ok;
-      }''':
-                  '''    private boolean startWrite(BluetoothGatt currentGatt, BluetoothGattCharacteristic c, byte[] data) {
+      }''',
+               '''    private boolean startWrite(BluetoothGatt currentGatt, BluetoothGattCharacteristic c, byte[] data) {
           boolean forceNoResponse = c.getUuid().equals(NUS_RX) &&
                   (c.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0;
           int type = forceNoResponse
@@ -79,21 +79,21 @@ jobs:
           if (ok && type == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
               handler.postDelayed(this::completeOperation, 220);
           return ok;
-      }''',
-              'text = "ORBIS v0.8 — EXPLORADOR FE\\n\\n"':
-                  'text = "ORBIS v0.8.1 — EXPLORADOR DF/FE\\n\\n"',
-              'shareText("Orbis v0.8 G28", text, "Compartilhar captura");':
-                  'shareText("Orbis v0.8.1 G28", text, "Compartilhar captura");',
-              'root.put("version", "0.8");':
-                  'root.put("version", "0.8.1");',
-              'shareText("Orbis v0.8 JSON", root.toString(2), "Compartilhar JSON");':
-                  'shareText("Orbis v0.8.1 JSON", root.toString(2), "Compartilhar JSON");'
-          }
+      }'''),
+              ('text = "ORBIS v0.8 — EXPLORADOR FE\\n\\n"',
+               'text = "ORBIS v0.8.1 — EXPLORADOR DF/FE\\n\\n"'),
+              ('shareText("Orbis v0.8 G28", text, "Compartilhar captura");',
+               'shareText("Orbis v0.8.1 G28", text, "Compartilhar captura");'),
+              ('root.put("version", "0.8");',
+               'root.put("version", "0.8.1");'),
+              ('shareText("Orbis v0.8 JSON", root.toString(2), "Compartilhar JSON");',
+               'shareText("Orbis v0.8.1 JSON", root.toString(2), "Compartilhar JSON");')
+          ]
 
           missing = []
-          for old, new in replacements.items():
+          for old, new in replacements:
               if old not in text:
-                  missing.append(old.splitlines()[0][:100])
+                  missing.append(old.splitlines()[0][:120])
               else:
                   text = text.replace(old, new)
 
@@ -101,11 +101,13 @@ jobs:
               raise SystemExit('Trechos não encontrados: ' + ' | '.join(missing))
 
           path.write_text(text, encoding='utf-8')
-          Path('.github/workflows/orbis-v081-patch.yml').unlink()
-      - name: Commit v0.8.1
+          PY
+
+      - name: Commit patched source
+        shell: bash
         run: |
           git config user.name "Orbis Builder"
           git config user.email "actions@users.noreply.github.com"
-          git add -A
+          git add app/src/main/java/com/orbiswatchlab/MainActivity.java
           git commit -m "Orbis Watch Lab v0.8.1 NUS no-response sequence test"
           git push
