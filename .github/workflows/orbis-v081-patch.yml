@@ -1,9 +1,10 @@
 name: Orbis v0.8.1 patch
 
 on:
+  push:
+    paths:
+      - '.github/workflows/orbis-v081-patch.yml'
   workflow_dispatch:
-  schedule:
-    - cron: '*/5 * * * *'
 
 permissions:
   contents: write
@@ -33,52 +34,52 @@ jobs:
               'mapButton = button("MAPEAR FE00–0F", v -> startFeMap());':
                   'mapButton = button("SEQUÊNCIA DF/FE ×3", v -> startFeMap());',
               '''    private void startFeMap() {
-        String[] commands = new String[16];
-        for (int i = 0; i < commands.length; i++) commands[i] = String.format(Locale.US, "FE %02X", i);
-        startExplorer("MAPA FE00–0F", commands);
-    }''':
+          String[] commands = new String[16];
+          for (int i = 0; i < commands.length; i++) commands[i] = String.format(Locale.US, "FE %02X", i);
+          startExplorer("MAPA FE00–0F", commands);
+      }''':
                   '''    private void startFeMap() {
-        startExplorer("SEQUÊNCIA DF/FE ×3", new String[]{
-                "DF 00", "DF 00 00", "FE 01",
-                "DF 00", "DF 00 00", "FE 01",
-                "DF 00", "DF 00 00", "FE 01"
-        });
-    }''',
+          startExplorer("SEQUÊNCIA DF/FE ×3", new String[]{
+                  "DF 00", "DF 00 00", "FE 01",
+                  "DF 00", "DF 00 00", "FE 01",
+                  "DF 00", "DF 00 00", "FE 01"
+          });
+      }''',
               'appendLog("Canal exclusivo NUS-RX; intervalo " + FE_GAP_MS + " ms; sem FFF1/FF13/FF02/OTA/reset");':
                   'appendLog("Canal exclusivo NUS-RX em WRITE_NO_RESPONSE; intervalo " + FE_GAP_MS + " ms; sem FFF1/FF13/FF02/OTA/reset");',
               '''    private boolean startWrite(BluetoothGatt currentGatt, BluetoothGattCharacteristic c, byte[] data) {
-        int type = (c.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE) != 0 ? BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT : BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE;
-        c.setWriteType(type);
-        if (Build.VERSION.SDK_INT >= 33) {
-            boolean ok = currentGatt.writeCharacteristic(c, data, type) == BluetoothStatusCodes.SUCCESS;
-            if (ok && type == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) handler.postDelayed(this::completeOperation, 180);
-            return ok;
-        }
-        c.setValue(data); boolean ok = currentGatt.writeCharacteristic(c); if (ok && type == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) handler.postDelayed(this::completeOperation, 180); return ok;
-    }''':
+          int type = (c.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE) != 0 ? BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT : BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE;
+          c.setWriteType(type);
+          if (Build.VERSION.SDK_INT >= 33) {
+              boolean ok = currentGatt.writeCharacteristic(c, data, type) == BluetoothStatusCodes.SUCCESS;
+              if (ok && type == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) handler.postDelayed(this::completeOperation, 180);
+              return ok;
+          }
+          c.setValue(data); boolean ok = currentGatt.writeCharacteristic(c); if (ok && type == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) handler.postDelayed(this::completeOperation, 180); return ok;
+      }''':
                   '''    private boolean startWrite(BluetoothGatt currentGatt, BluetoothGattCharacteristic c, byte[] data) {
-        boolean forceNoResponse = c.getUuid().equals(NUS_RX) &&
-                (c.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0;
-        int type = forceNoResponse
-                ? BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                : ((c.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE) != 0
-                    ? BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-                    : BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE);
-        c.setWriteType(type);
-        appendLog("TX MODE [" + shortUuid(c.getUuid()) + "] " +
-                (type == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE ? "NO_RESPONSE" : "DEFAULT"));
-        if (Build.VERSION.SDK_INT >= 33) {
-            boolean ok = currentGatt.writeCharacteristic(c, data, type) == BluetoothStatusCodes.SUCCESS;
-            if (ok && type == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
-                handler.postDelayed(this::completeOperation, 220);
-            return ok;
-        }
-        c.setValue(data);
-        boolean ok = currentGatt.writeCharacteristic(c);
-        if (ok && type == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
-            handler.postDelayed(this::completeOperation, 220);
-        return ok;
-    }''',
+          boolean forceNoResponse = c.getUuid().equals(NUS_RX) &&
+                  (c.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0;
+          int type = forceNoResponse
+                  ? BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                  : ((c.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE) != 0
+                      ? BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                      : BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE);
+          c.setWriteType(type);
+          appendLog("TX MODE [" + shortUuid(c.getUuid()) + "] " +
+                  (type == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE ? "NO_RESPONSE" : "DEFAULT"));
+          if (Build.VERSION.SDK_INT >= 33) {
+              boolean ok = currentGatt.writeCharacteristic(c, data, type) == BluetoothStatusCodes.SUCCESS;
+              if (ok && type == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
+                  handler.postDelayed(this::completeOperation, 220);
+              return ok;
+          }
+          c.setValue(data);
+          boolean ok = currentGatt.writeCharacteristic(c);
+          if (ok && type == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
+              handler.postDelayed(this::completeOperation, 220);
+          return ok;
+      }''',
               'text = "ORBIS v0.8 — EXPLORADOR FE\\n\\n"':
                   'text = "ORBIS v0.8.1 — EXPLORADOR DF/FE\\n\\n"',
               'shareText("Orbis v0.8 G28", text, "Compartilhar captura");':
