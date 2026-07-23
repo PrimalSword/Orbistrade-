@@ -13,12 +13,12 @@
 
     <application
         android:allowBackup="false"
-        android:label="Orbis Watch Lab v0.16a"
+        android:label="Orbis Watch Lab v0.16b"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
         <activity
-            android:name=".MainActivityV16"
+            android:name=".MainActivityV16B"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
