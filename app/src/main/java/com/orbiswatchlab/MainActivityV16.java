@@ -14,6 +14,8 @@ import android.bluetooth.BluetoothProfile;
 import android.bluetooth.le.BluetoothLeScanner;
 import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanResult;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.os.Build;
@@ -35,7 +37,7 @@ import java.util.Locale;
 import java.util.UUID;
 
 public class MainActivityV16 extends Activity {
-    private static final String VERSION = "0.16";
+    private static final String VERSION = "0.16a";
     private static final int REQ = 1601;
     private static final long SCAN_MS = 15000;
     private static final UUID CCCD = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
@@ -63,6 +65,8 @@ public class MainActivityV16 extends Activity {
     private Button searchButton;
     private Button capturedButton;
     private Button readButton;
+    private Button clearButton;
+    private Button copyButton;
     private Button disconnectButton;
 
     private final Runnable scanTimeout = () -> {
@@ -179,11 +183,19 @@ public class MainActivityV16 extends Activity {
         readButton = button("LER ESTADO DF 00", v -> sendPacket("LER ESTADO", new byte[]{(byte) 0xDF, 0x00}));
         root.addView(readButton, fullButtonParams());
 
+        LinearLayout tools = new LinearLayout(this);
+        tools.setOrientation(LinearLayout.HORIZONTAL);
+        clearButton = button("LIMPAR LOG", v -> clearLog());
+        copyButton = button("COPIAR LOG", v -> copyLog());
+        addWeighted(tools, clearButton);
+        addWeighted(tools, copyButton);
+        root.addView(tools);
+
         disconnectButton = button("DESCONECTAR", v -> disconnect());
         root.addView(disconnectButton, fullButtonParams());
 
         TextView warning = new TextView(this);
-        warning.setText("Teste controlado: observe o relógio antes e depois. O comando capturado ainda não está classificado com certeza.");
+        warning.setText("Monitor ao vivo: conecte, limpe o log e altere apenas uma configuração no relógio. Os eventos RX serão registrados automaticamente.");
         warning.setTextSize(14);
         warning.setPadding(0, dp(8), 0, dp(8));
         root.addView(warning);
@@ -273,6 +285,19 @@ public class MainActivityV16 extends Activity {
         else append("RX " + c.getUuid() + " | " + hex(value));
     }
 
+    private void clearLog() {
+        log.setLength(0);
+        logView.setText("");
+        append("LOG LIMPO | monitor ao vivo iniciado");
+    }
+
+    private void copyLog() {
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard == null) { toast("Área de transferência indisponível"); return; }
+        clipboard.setPrimaryClip(ClipData.newPlainText("Orbis Watch Lab Log", log.toString()));
+        toast("Log copiado");
+    }
+
     private void disconnect() {
         stopScan();
         if (gatt != null) {
@@ -334,6 +359,12 @@ public class MainActivityV16 extends Activity {
         return lp;
     }
 
+    private void addWeighted(LinearLayout row, View view) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(56), 1f);
+        lp.setMargins(dp(3), dp(3), dp(3), dp(3));
+        row.addView(view, lp);
+    }
+
     private void append(String message) {
         String line = clock.format(new Date()) + "  " + message;
         log.append(line).append('\n');
@@ -353,6 +384,8 @@ public class MainActivityV16 extends Activity {
             searchButton.setEnabled(!connected && !connecting && gatt == null);
             capturedButton.setEnabled(ready);
             readButton.setEnabled(ready);
+            clearButton.setEnabled(true);
+            copyButton.setEnabled(log.length() > 0);
             disconnectButton.setEnabled(gatt != null || connected || connecting);
         });
     }
