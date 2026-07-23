@@ -7,11 +7,11 @@ android {
     compileSdk 35
 
     defaultConfig {
-        applicationId "com.orbiswatchlab.v017"
+        applicationId "com.orbiswatchlab.v016a"
         minSdk 21
         targetSdk 35
-        versionCode 17
-        versionName "0.17"
+        versionCode 161
+        versionName "0.16a"
     }
 
     buildTypes {
